@@ -1,0 +1,335 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Voice Math Game 2-Digit</title>
+    <style>
+        :root {
+            --bg-color: #1a1a2e;
+            --accent-color: #ff2e63;
+            --text-color: #eaeaea;
+            --hud-color: #0f0;
+        }
+
+        body {
+            margin: 0; padding: 0; overflow: hidden;
+            background: var(--bg-color);
+            font-family: 'Arial Black', sans-serif;
+            height: 100dvh;
+            display: flex;
+            flex-direction: column;
+            color: #fff;
+            touch-action: manipulation;
+        }
+        
+        #container { 
+            position: relative; 
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        
+        .hud-container {
+            width: 100%;
+            display: flex;
+            justify-content: space-between;
+            pointer-events: none;
+            z-index: 20;
+        }
+
+        .hud { 
+            font-size: clamp(24px, 6vw, 40px); 
+            font-weight: bold; 
+            color: var(--hud-color); 
+            text-shadow: 2px 2px #000; 
+        }
+        #time-text { color: #fff; }
+        
+        #status-text {
+            font-size: clamp(18px, 4vw, 24px); 
+            color: #ffde00; 
+            text-align: center; 
+            text-shadow: 2px 2px #000;
+            margin-top: 10px;
+        }
+
+        #question-area { 
+            position: relative;
+            flex: 1;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            width: 100%;
+        }
+        
+        .main-q { 
+            font-size: clamp(80px, 25vw, 180px); 
+            color: var(--accent-color); 
+            font-weight: bold; 
+            -webkit-text-stroke: 2px var(--text-color);
+            line-height: 1; 
+            white-space: nowrap;
+            z-index: 5;
+            text-align: center;
+        }
+
+        .correct-circle {
+            position: absolute;
+            width: 60vw;
+            height: 60vw;
+            max-width: 400px;
+            max-height: 400px;
+            border: clamp(15px, 4vw, 40px) solid rgba(255, 0, 0, 0.8); 
+            border-radius: 50%; 
+            display: none; 
+            box-shadow: 0 0 20px #000; 
+            z-index: 10;
+        }
+
+        #transcript-view {
+            width: 90%;
+            max-width: 500px;
+            font-size: clamp(18px, 5vw, 28px); 
+            color: #00d2ff;
+            background: rgba(0,0,0,0.7); 
+            padding: 12px 20px; 
+            border-radius: 50px;
+            border: 2px solid #00d2ff;
+            text-align: center;
+            margin-bottom: 20px;
+            min-height: 1.5em;
+        }
+
+        .footer-hint {
+            font-size: 14px;
+            color: #aaa;
+            margin-bottom: 10px;
+        }
+    </style>
+</head>
+<body>
+
+<div id="container">
+    <div class="hud-container">
+        <div class="hud" id="score-text">Score: 0</div>
+        <div class="hud" id="time-text">Time: 90</div>
+    </div>
+
+    <div id="status-text">画面をクリックしてスタート</div>
+    
+    <div id="question-area">
+        <div id="main-q" class="main-q">2桁版</div>
+        <div id="correct-circle" class="correct-circle"></div>
+    </div>
+
+    <div id="transcript-view">待機中...</div>
+
+    <div class="footer-hint">
+        2桁の答えを声に出してください
+    </div>
+</div>
+
+<script>
+    const scoreText = document.getElementById('score-text');
+    const timeText = document.getElementById('time-text');
+    const statusText = document.getElementById('status-text');
+    const mainQ = document.getElementById('main-q');
+    const correctCircle = document.getElementById('correct-circle');
+    const transcriptView = document.getElementById('transcript-view');
+
+    let score = 0;
+    let timeLeft = 90; // 60から90に変更
+    let gameStarted = false;
+    let currentAns = 0;
+    let lastAns = -1; 
+    let startTime = 0;
+    let isProcessing = false;
+    let recognitionStarted = false;
+
+    let audioCtx;
+    function initAudio() {
+        if (!audioCtx) {
+            audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+        }
+        if (audioCtx.state === 'suspended') {
+            audioCtx.resume();
+        }
+    }
+
+    const synth = window.speechSynthesis;
+    function speak(text) {
+        if (!text) return;
+        const uttr = new SpeechSynthesisUtterance(text);
+        uttr.lang = 'ja-JP';
+        synth.speak(uttr);
+    }
+
+    function beep() {
+        if (!audioCtx) return;
+        const osc = audioCtx.createOscillator();
+        const gain = audioCtx.createGain();
+        osc.type = 'sine';
+        osc.frequency.setValueAtTime(700, audioCtx.currentTime);
+        gain.gain.setValueAtTime(0.2, audioCtx.currentTime);
+        osc.connect(gain);
+        gain.connect(audioCtx.destination);
+        osc.start();
+        osc.stop(audioCtx.currentTime + 0.1);
+    }
+
+    const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+    let recognition;
+
+    if (SpeechRecognition) {
+        recognition = new SpeechRecognition();
+        recognition.lang = 'ja-JP';
+        recognition.continuous = true;
+        recognition.interimResults = true;
+
+        recognition.onstart = () => {
+            recognitionStarted = true;
+            if (!gameStarted) startGameSession();
+        };
+
+        recognition.onresult = (event) => {
+            if (!gameStarted || isProcessing) return;
+            let resultText = "";
+            for (let i = event.resultIndex; i < event.results.length; i++) {
+                resultText += event.results[i][0].transcript;
+            }
+            transcriptView.textContent = `認識中: ${resultText}`;
+
+            const matches = resultText.match(/\d+/g);
+            if (matches) {
+                for (let numStr of matches) {
+                    if (parseInt(numStr) === currentAns) {
+                        handleCorrect();
+                        return;
+                    }
+                }
+            }
+
+            if (resultText.includes(currentAns.toString())) {
+                handleCorrect();
+            }
+        };
+
+        recognition.onend = () => { 
+            if (gameStarted) recognition.start(); 
+        };
+
+        recognition.onerror = (event) => {
+            console.error("Speech recognition error:", event.error);
+            if (event.error === 'not-allowed') {
+                statusText.textContent = "マイクの使用を許可してください";
+            }
+        };
+    }
+
+    function initGame() {
+        if (gameStarted) return;
+        initAudio();
+        score = 0;
+        scoreText.textContent = `Score: ${score}`;
+        statusText.textContent = "聞き取りを開始します...";
+        
+        try {
+            recognition.start();
+        } catch(e) {
+            if (recognitionStarted || !SpeechRecognition) startGameSession();
+        }
+    }
+
+    function startGameSession() {
+        timeLeft = 90; // 60から90に変更
+        lastAns = -1; 
+        gameStarted = true;
+        isProcessing = false;
+        startTime = Date.now();
+        statusText.textContent = "答えを声に出して！"; 
+        speak("スタート。");
+        generateQuestion();
+        updateTimer();
+    }
+
+    function generateQuestion() {
+        let n1, n2, newAns, op;
+        const isAddition = Math.random() > 0.5;
+
+        if (isAddition) {
+            n1 = Math.floor(Math.random() * 80) + 10; 
+            n2 = Math.floor(Math.random() * (99 - n1 - 10 + 1)) + 10; 
+            newAns = n1 + n2;
+            op = "+";
+        } else {
+            n1 = Math.floor(Math.random() * 80) + 20; 
+            n2 = Math.floor(Math.random() * (n1 - 10 - 10 + 1)) + 10; 
+            newAns = n1 - n2;
+            op = "-";
+        }
+
+        if (newAns === lastAns) {
+            generateQuestion();
+            return;
+        }
+
+        currentAns = newAns;
+        lastAns = currentAns; 
+        mainQ.textContent = `${n1}${op}${n2}`;
+        transcriptView.textContent = "聞き取り中...";
+    }
+
+    function handleCorrect() {
+        isProcessing = true;
+        score++;
+        scoreText.textContent = `Score: ${score}`;
+        beep();
+        
+        mainQ.textContent = currentAns;
+        correctCircle.style.display = "block";
+
+        setTimeout(() => {
+            correctCircle.style.display = "none";
+            isProcessing = false;
+            if (gameStarted) generateQuestion();
+        }, 800);
+    }
+
+    function updateTimer() {
+        if (!gameStarted) return;
+        const now = Date.now();
+        const elapsed = Math.floor((now - startTime) / 1000);
+        timeLeft = Math.max(0, 90 - elapsed); // 60から90に変更
+        timeText.textContent = `Time: ${timeLeft}`;
+        if (timeLeft <= 0) endGame();
+        else requestAnimationFrame(updateTimer);
+    }
+
+    function endGame() {
+        gameStarted = false;
+        mainQ.textContent = "終了";
+        speak(`${score}点です。お疲れ様でした。`);
+        statusText.textContent = "クリックしてリスタート";
+        if (recognition) recognition.stop();
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Enter') initGame();
+    });
+
+    window.addEventListener('touchstart', (e) => {
+        if (e.touches.length > 1) e.preventDefault();
+        initGame();
+    }, { passive: false });
+
+    window.addEventListener('click', () => {
+        initGame();
+    });
+</script>
+</body>
+</html>
